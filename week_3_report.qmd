@@ -1,0 +1,1556 @@
+---
+title: "CNN Cancer Detection Kaggle Mini-Project"
+subtitle: "DTSA 5511: Introduction to Deep Learning"
+author: 
+    - name: "Andrew Simms"
+      affiliation: "University of Colorado Boulder"
+date: today
+
+format:
+    html:
+        theme: [custom.scss]
+        monofont: "Menlo"
+        highlight-style: monokai
+        mermaid:
+          theme: neutral
+        code-overflow: wrap
+        code-fold: true
+    ipynb:
+        toc: true
+
+reference-lotation: margin
+citation-lotation: margin
+table-of-contents: true
+toc-location: left
+code-line-numbers: false
+toc-title: 'Table of Contents'
+number-sections: true
+bibliography: ../ref.bib
+embed-resources: true
+# keep-ipynb: true
+---
+
+# Problem Description
+
+
+The [Histopathologic Cancer Detection Kaggle
+competition](https://www.kaggle.com/competitions/histopathologic-cancer-detection/overview)
+developed by @kaggle_cancer details a challenge in medical diagnostics: identifying
+metastatic cancer in small image patches extracted from larger digital pathology scans. This binary
+classification problem involves determining whether each image patch contains cancerous or
+non-cancerous tissue. The competition utilizes a modified version of the PatchCamelyon (PCam)
+dataset, a well-established benchmark in medical imaging, providing labeled image patches that
+facilitate the development and evaluation of image classification models.
+
+This report aims to quantify the impact of architectural configurations and preprocessing
+strategies on model accuracy, employing common performance metrics and visualization techniques to
+analyze results. Ultimately, this work seeks to understand the application of CNNs in pathology
+image analysis and their potential contributions to automated cancer detection.
+
+## Approach & Methodology
+
+
+At a high level, this project aims to train, validate, and test different CNN architectures, as introduced in the Week 3 lectures:
+
+* VGNet, defined in @lst-vgnet, based on *Very Deep Convolutional Networks for Large-Scale Image Recognition* [@Simonyan_Deep_CNN]  
+* InceptionNet, defined in @lst-inception, based on *Going Deeper With Convolutions* [@Szegedy_InceptionNet]  
+* ResNet, defined in @lst-resnet, based on *Deep Residual Learning for Image Recognition* [@He_Deep_Residual_Learning]  
+
+
+The training methodology will follow an iterative procedure: defining models, training them on labeled image patches, evaluating their performance on test data, and refining them through hyperparameter optimization. The cycle repeats to improve performance, offering a systematic approach to model development.  
+
+
+```{mermaid}
+%%| label: fig-train-high-level
+%%| fig-cap: "High Level Project Flowchart"
+
+flowchart LR
+    Define["Define Model"] --> Train["Train"] --> Validate -->  TuneHyper[Optimize Hyperparameters] --> Train --> Final["Final Model"] --> Classify[Classify\nTest Data] --> Submit
+```
+
+
+This cyclical workflow defines a structured exploration of CNN performance, with a particular
+emphasis on targeted hyperparameter optimization of initial models.  Given the extensive range of
+hyperparameters that can be adjusted, which could potentially lead to an ongoing and open-ended
+process, we will focus on a carefully selected subset of hyperparameters.  These will be identified
+based on insights gained from exploratory data analysis conducted prior to bulk model training. This
+focused approach not only aims to develop high-performing models but also to uncover valuable
+insights into the complex relationships between model architecture, data characteristics, and
+predictive outcomes.
+
+
+## Data Descriptions
+
+There are 3 data products necessary for training a CNN, training images, training classifications, and test images to classify. In the sections below we detail each of these distinct datasets.
+
+```{python}
+from pathlib import Path
+import seaborn as sns
+sns.set_theme()
+
+train_img_path = Path("../data/cancer_detection/histopathologic-cancer-detection/train")
+test_img_path = Path("../data/cancer_detection/histopathologic-cancer-detection/test")
+```
+
+### Training Data
+
+| Statistic   | Value                                              |
+| :---        | ---:                                               |
+| Format      | 96 x 96 px  `.tif` images in `train` folder                 |
+| Value Count | `{python} len(list(train_img_path.rglob("*.tif")))` |
+
+: Training Data Statistics {#tbl-train-data-stats}
+
+
+### Training Labels
+
+```{python}
+import pandas as pd
+
+
+df = pd.read_csv("../data/cancer_detection/histopathologic-cancer-detection/train_labels.csv")
+```
+
+| Statistic     | Value                                                                                     |
+| :---          | ---:                                                                                      |
+| Format        | Tabular Data in `train_labels.csv`                                                        |
+| Value Count   | `{python} len(df)`                                                                        |
+| Columns       | `{python} list(df.columns)`                                                               |
+| `NaN` Count   | `{python} df.isna().sum().sum()`                                                          |
+| Unique Values | `{python} str(df["label"].unique()).replace('[', '').replace(']', '').replace(" ", ', ')` |
+
+: Training Labels Statistics {#tbl-train-label-stats}
+
+### Test Data
+
+| Statistic   | Value                                              |
+| :---        | ---:                                               |
+| Format      | 96 x 96 px  `.tif` images in `test` folder                 |
+| Value Count | `{python} len(list(test_img_path.rglob("*.tif")))` |
+
+: Testing Data Statistics {#tbl-test-data-stats}
+
+## Expected Output
+
+The Kaggle submission expects an output csv file called `submission.csv` with the columns:
+
+| Column  | Content                                       |
+| :---    | ---:                                          |
+| `id`    | Input image name without `.tif`               |
+| `label` | Classification, 0 for no cancer, 1 for cancer |
+
+: Kaggle Submission Data Description {#tbl-kaggle-sub-descrip}
+
+
+# Exploratory Data Analysis
+
+## Training Data Classifications
+
+Training data is provided in two forms, `.tif` images and a csv file mapping `.tif` images to
+labels. Parsing `train_labels.csv` yield specifications about the training dataset:
+
+```{python}
+#| label: tbl-train-head
+#| tbl-cap: "Training Data Labels"
+
+from IPython.display import Markdown, display
+
+
+display(Markdown(df.head().to_markdown(index=False)))
+```
+
+In @tbl-train-head the column `id` maps to a `.tif` file in the `train` folder and the `label`
+indicates if the images is classified as having cancer, `1` or not having cancer, `0`
+
+### Training Label Statistics
+
+| Statistic     | Value              |
+| -----         | -----              |
+| Value Count   | `{python} len(df)` |
+| `NaN` Count   | `{python} df.isna().sum().sum()` |
+| Unique Values | `{python} str(df["label"].unique()).replace('[', '').replace(']', '').replace(" ", ', ')` |
+| Percentage of `1` | `{python} f"{(len(df[df['label'] == 1]) / len(df)) * 100:.4f}"`% |
+| Percentage of `0` | `{python} f"{(len(df[df['label'] == 0]) / len(df)) * 100:.4f}"`% |
+
+: Training Label Data Statistics {#tbl-train-label-stats}
+
+In @tbl-train-label-stats there we calculate that roughly 40 percent of the training data has a
+training label of 1. While not entirely unexpected, this is interesting and may be useful as a
+secondary validation check during the training process
+
+
+## Training Images
+
+In @fig-train-images-sample the first 5 images in the dataset are visualized at their full
+resolution. Per the Kaggle data
+description the images are 96x96px, but the classification was done within the 32x32px section.
+
+```{python}
+#| label: fig-train-images-sample
+#| fig-cap: "Sample of Training Images"
+#| fig-subcap: ""
+#| layout-ncol: 5
+
+from pathlib import Path
+import matplotlib.pyplot as plt
+from PIL import Image
+
+
+img_labels = df['id'].iloc[:5].to_list()
+
+def plot_cancer_images(img_labels, zoom=False, scale_factor=1):
+    for img in img_labels:
+        img_path = Path(train_img_path, f"{img}.tif")
+        with Image.open(img_path) as img:
+            if zoom:
+                # Crop to the center 32x32 pixels
+                width, height = img.size
+                left = (width - 32) // 2
+                top = (height - 32) // 2
+                right = left + 32
+                bottom = top + 32
+                img = img.crop((left, top, right, bottom))
+            
+            # Get the new image size
+            width, height = img.size
+            
+            # Apply scale factor if zoomed
+            width *= scale_factor
+            height *= scale_factor
+            
+            # Set figure size to match the scaled image size
+            dpi = 100  # Dots per inch
+            figsize = (width / dpi, height / dpi)
+            
+            # Create figure and axes
+            fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+            ax.imshow(img)
+            ax.axis("off")  # Turn off axes
+            
+            # Remove all margins and display inline
+            plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            plt.show()
+
+plot_cancer_images(img_labels)
+```
+
+### Full Size Image Comparison
+
+A comparison of full size positive and negatives is shown in @fig-train-images-sample-positive and @fig-train-images-sample-negative. The purpose of this visualization is to determine if there are obvious visual differences between the two image classes.
+
+:::{.column-screen-inset}
+
+:::{.columns}
+
+:::{.column width="48%"}
+
+#### Positive Sample Images
+
+```{python}
+#| label: fig-train-images-sample-positive
+#| fig-cap: "Sample of Positive Training Images"
+#| fig-subcap: ""
+#| layout-ncol: 5
+#| layout-nrow: 5
+
+positive_labels = df.loc[df['label'] == 1, 'id'].iloc[:25].to_list()
+plot_cancer_images(positive_labels)
+```
+
+:::
+
+:::{.column width="4%"}
+:::
+
+:::{.column width="48%"}
+
+#### Negative Sample Images
+
+```{python}
+#| label: fig-train-images-sample-negative
+#| fig-cap: "Sample of Negative Training Images"
+#| fig-subcap: ""
+#| layout-ncol: 5
+#| layout-nrow: 5
+
+negative_labels = df.loc[df['label'] == 0, 'id'].iloc[:25].to_list()
+plot_cancer_images(negative_labels)
+```
+:::
+
+:::
+
+:::
+
+
+In @fig-train-images-sample-positive and @fig-train-images-sample-negative we observe that both
+image classes appear to have similar color characteristics with the color pallet leaning towards
+red/purple. Additionally, some of the negative training images have large areas of white, but this
+could be due to chance. Overall, both classes appear to be candidates for identification using CNN
+techniques.
+
+### Zoomed Image Comparison
+
+Of additional interest is a visual inspection of the images cropped to the cancer detection area of
+32 x 32 px. All positive and negative samples are the same as above.
+
+:::{.column-screen-inset}
+
+:::{.columns}
+
+:::{.column width="48%"}
+
+#### Zoomed Positive Sample Images
+
+```{python}
+#| label: fig-train-images-sample-positive-zoom
+#| fig-cap: "32 x 32px Sample of Positive Training Images"
+#| fig-subcap: ""
+#| layout-ncol: 5
+#| layout-nrow: 5
+
+positive_labels = df.loc[df['label'] == 1, 'id'].iloc[:25].to_list()
+plot_cancer_images(positive_labels, zoom=True, scale_factor=3)
+```
+:::
+
+:::{.column width="4%"}
+:::
+
+:::{.column width="48%"}
+
+#### Zoomed Negative Sample Images
+
+```{python}
+#| label: fig-train-images-sample-negative-zoom
+#| fig-cap: "32 x 32px Sample of Negative Training Images"
+#| fig-subcap: ""
+#| layout-ncol: 5
+#| layout-nrow: 5
+
+negative_labels = df.loc[df['label'] == 0, 'id'].iloc[:25].to_list()
+plot_cancer_images(negative_labels, zoom=True, scale_factor=3)
+```
+
+:::
+
+:::
+
+:::
+
+In @fig-train-images-sample-positive-zoom and @fig-train-images-sample-negative-zoom we again
+observe no obvious differences between the two classes. Some of the negative samples are
+predominately white, which should be easily classified by the CNN models.
+
+
+# Convolutional Neural Network Models
+
+In this section, we outline the CNN architectures developed for this project, including their
+implementation in [PyTorch](https://pytorch.org) [@pytorch]. Each model—VGNet, InceptionNet, and
+ResNet—is built upon the foundational papers detailing their respective architectures, which have
+set benchmarks for convolutional neural networks in computer vision tasks. We will train and
+evaluate each architecture to assess its performance on the PCam dataset.
+
+Each model is designed to accept input images of dimensions 96×96, 48×48, or 32×32 pixels with three
+color channels (RGB). The output layer is configured to predict a binary classification, producing a
+0 or 1 depending on the model's prediction. This design aligns with PCam input data and ensures
+consistency across architectures while allowing for comparative analysis of performance under
+varying input resolutions.
+
+
+## VGNet PyTorch Definition
+
+VGNet as described in *Very Deep Convolutional Networks for Large-Scale Image Recognition*
+[@Simonyan_Deep_CNN], is a deep CNN designed for large-scale image classification tasks. The
+architecture consists of a series of convolutional layers followed by fully connected layers. The
+key feature of VGNet is its depth, with a large number of layers contributing to its high capacity
+for learning from complex data.
+
+In @lst-vgnet, we define the layers in the following order:
+
+1. Three convolutional blocks with increasing numbers of filters.
+2. MaxPooling layers to reduce spatial dimensions.
+3. Fully connected layers to classify the output features.
+
+The network is designed to take an input image and output a prediction for one of the predefined
+classes. The code provided below is a direct translation of the VGNet architecture to PyTorch.
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| eval: false
+#| code-fold: false
+#| lst-label: lst-vgnet
+#| lst-cap: VGNet PyTorch CNN Model
+
+class VGNet(nn.Module):
+    def __init__(self, input_size, num_classes=2):
+        super(VGNet, self).__init__()
+        # Define 3 convolution layers
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.pool1 = nn.MaxPool2d(2, 2)
+
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.pool2 = nn.MaxPool2d(2, 2)
+
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.conv6 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.pool3 = nn.MaxPool2d(2, 2)
+
+        self.input_size = input_size
+        self.feature_map_size = self._get_feature_map_size(input_size)
+
+        self.fc1 = nn.Linear(self.feature_map_size, 1024)
+        self.fc2 = nn.Linear(1024, 1024)
+        # Binary Classification
+        self.fc3 = nn.Linear(1024, num_classes)
+
+    # Handle different size images
+    def _get_feature_map_size(self, input_size):
+        size = input_size // 2  # After pool1
+        size = size // 2  # After pool2
+        size = size // 2  # After pool3
+        return 256 * size * size  # 256 channels in the last conv layer
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.pool1(x)
+
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.pool2(x)
+
+        x = F.relu(self.conv5(x))
+        x = F.relu(self.conv6(x))
+        x = self.pool3(x)
+
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+```
+
+:::
+
+## InceptionNet PyTorch Definition
+
+This InceptionNet model is based on *Going Deeper With Convolutions* [@Szegedy_InceptionNet].
+InceptionNet introduces the idea of using multiple filter sizes in parallel within the same layer,
+which allows the model to capture different types of features. The architecture includes various
+branches, each performing a different convolution operation, and these are concatenated to form the
+output.
+
+In @lst-inception we define the InceptionBlock, which contains these multiple branches,
+and then stack two such blocks in sequence. The network also uses a large initial convolution layer
+and pooling layers for spatial dimension reduction. The final output is classified through a fully
+connected layer.
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| eval: false
+#| code-fold: false
+#| lst-label: lst-inception
+#| lst-cap: InceptionNet PyTorch CNN Model
+
+class InceptionBlock(nn.Module):
+    def __init__(self, in_channels):
+        super(InceptionBlock, self).__init__()
+        self.branch1x1 = nn.Conv2d(in_channels, 64, kernel_size=1)
+
+        self.branch3x3 = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+        )
+
+        self.branch5x5 = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=1),
+            nn.Conv2d(32, 64, kernel_size=5, padding=2),
+        )
+
+        self.branch_pool = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels, 64, kernel_size=1),
+        )
+
+    def forward(self, x):
+        branch1x1 = self.branch1x1(x)
+        branch3x3 = self.branch3x3(x)
+        branch5x5 = self.branch5x5(x)
+        branch_pool = self.branch_pool(x)
+        return torch.cat([branch1x1, branch3x3, branch5x5, branch_pool], dim=1)
+
+
+class InceptionNetLike(nn.Module):
+    def __init__(self, input_size, num_classes=2):
+        super(InceptionNetLike, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.pool1 = nn.MaxPool2d(3, 2, padding=1)
+
+        self.inception1 = InceptionBlock(64)
+        self.inception2 = InceptionBlock(320)
+        self.pool2 = nn.MaxPool2d(3, 2, padding=1)
+
+        # Dynamically compute the flattened size for the fully connected layer
+        self.input_size = input_size
+        self.feature_map_size = self._get_feature_map_size(input_size)
+        self.fc = nn.Linear(self.feature_map_size, num_classes)
+
+
+    # Handle different sized inputs
+    def _get_feature_map_size(self, input_size):
+        size = (input_size + 2 * 3 - 7) // 2 + 1  # After conv1
+        size = (size + 2 * 1 - 3) // 2 + 1  # After pool1
+        size = (size + 2 * 1 - 3) // 2 + 1  # After pool2
+        return 320 * size * size  # 320 channels in the last InceptionBlock
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = self.pool1(x)
+
+        x = self.inception1(x)
+        x = self.inception2(x)
+        x = self.pool2(x)
+
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+```
+
+:::
+
+## ResNet PyTorch Definition
+
+ResNet introduced in *Deep Residual Learning for Image Recognition* [@He_Deep_Residual_Learning], is
+known for its innovative use of residual connections, which help mitigate the problem of vanishing
+gradients in deep networks. These connections allow the network to learn residual functions instead
+of direct mappings, significantly improving the training of very deep networks.
+
+The following PyTorch implementation follows the ResNet-like architecture with three layers, each containing
+multiple residual blocks. The model utilizes batch normalization and convolutional layers to
+progressively extract features before classifying them with a fully connected layer.
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| eval: false
+#| code-fold: false
+#| lst-label: lst-resnet
+#| lst-cap: ResNet PyTorch CNN Model
+
+class ResNetLike(nn.Module):
+    def __init__(self, input_size, num_classes=2):
+        super(ResNetLike, self).__init__()
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+
+        self.layer1 = self._make_layer(64, 64, stride=1)
+        self.layer2 = self._make_layer(64, 128, stride=2)
+        self.layer3 = self._make_layer(128, 256, stride=2)
+
+        # Hard code feature map output size
+        if input_size == 32:
+            # 16384
+            self.feature_map_size = 32 * 512
+        elif input_size == 48:
+            # 36864
+            self.feature_map_size = 48 * 768
+        else:
+            # 1478956
+            self.feature_map_size = 96 * 1536
+
+        self.fc = nn.Linear(self.feature_map_size, num_classes)
+
+    def _make_layer(self, in_channels, out_channels, stride):
+        return nn.Sequential(
+            ResidualBlock(in_channels, out_channels, stride),
+            ResidualBlock(out_channels, out_channels, 1),
+        )
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+```
+
+:::
+
+
+# Training
+
+Training convolutional neural networks (CNNs) involves several key steps, from preparing the data
+for model consumption to optimizing the model parameters using backpropagation. In this section, we
+define and detail the critical components of the required to train each model.
+
+## Data Loader
+
+Using PyTorch’s `DataLoader`, the input is split into training and validation subsets with
+batching and shuffling enabled. The `CancerDataset` class handles loading and preprocessing image data. Transformations are specified as global variables
+and passed as input into the `CancerDataset` class.
+
+```{python}
+#| eval: false
+#| code-fold: false
+#| lst-label: lst-load-data
+#| lst-cap: Loading Data into Model
+
+class CancerDataset(Dataset):
+    def __init__(self, dataframe, img_folder, transform=None):
+        self.dataframe = dataframe
+        self.img_folder = img_folder
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.dataframe)
+
+    def __getitem__(self, idx):
+        img_id = self.dataframe.iloc[idx, 0]
+        label = self.dataframe.iloc[idx, 1]
+        img_path = self.img_folder / f"{img_id}.tif"
+        image = Image.open(img_path)
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+if TRANSFORM_TYPE == "NONE":
+    transform = transforms.Compose([transforms.ToTensor()])
+elif TRANSFORM_TYPE == "48PX_CROP":
+    transform = transforms.Compose([transforms.ToTensor(), transforms.CenterCrop(48)])
+elif TRANSFORM_TYPE == "32PX_CROP":
+    transform = transforms.Compose([transforms.ToTensor(), transforms.CenterCrop(32)])
+else:
+    raise ValueError(f"Unexpected TRANSFORM_TYPE {TRANSFORM_TYPE}")
+
+
+train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=1234)
+train_dataset = CancerDataset(train_df, train_img_folder, transform)
+val_dataset = CancerDataset(val_df, train_img_folder, transform=transform)
+val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+train_loader = DataLoader(
+    train_dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True
+)
+```
+
+## Training Loop
+
+The training loop uses a cross-entropy loss function and the Adam optimizer to adjust the model's
+parameters. During each epoch, batches of data are passed through the model, and the loss is
+computed and minimized using backpropagation. The loop is designed to iteratively improve the
+model’s ability to predict class labels accurately. 
+
+```{python}
+#| eval: false
+#| code-fold: false
+#| lst-label: lst-training
+#| lst-cap: Training Loop
+
+
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+for epoch in range(100):
+    model.train()
+
+    running_loss = 0.0
+
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+        labels = labels.float()
+        optimizer.zero_grad()
+        outputs = model(images)
+
+        loss = criterion(outputs.squeeze(), labels)
+
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+```
+
+## Hyperparameter Determination
+
+The training process begins with three predefined model architectures, serving as the foundation for
+hyperparameter exploration. The key focus is to identify static (unchanging) and dynamic (tunable)
+hyperparameters to optimize model performance. By concentrating on high-impact hyperparameters, the
+project narrows its scope to a manageable set of experiments, balancing the need for thorough
+exploration with practical constraints. This methodical approach prevents an unbounded exploration
+of the hyperparameter space while still ensuring robust optimization of the selected models.
+
+### Batch Size
+
+`batch_size` is an integer passed to
+[`torch.utils.DataLoader`](https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader),
+specifies the number of samples loaded per batch. During initial experiments, batch size showed a
+clear correlation with both model execution time and memory usage, making it a critical
+hyperparameter to tune.
+
+To determine the optimal batch size, multiple experiments were conducted using a single model
+architecture while varying the batch size. The results revealed a tradeoff between execution time
+and batch size.
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-batch-size-exc-time
+#| fig-cap: Execution Time vs. Batch Size
+
+batch_model_path = Path("../model_metrics_output/").resolve()
+batch_model_files = [
+    Path(batch_model_path, "v2.epochs_1.batch_size_8.parquet"),
+    Path(batch_model_path, "v2.epochs_1.batch_size_16.parquet"),
+    Path(batch_model_path, "v2.epochs_1.batch_size_32.parquet"),
+    Path(batch_model_path, "v2.epochs_5.batch_size_64.parquet"),
+    Path(batch_model_path, "v2.epochs_1.batch_size_128.parquet"),
+    Path(batch_model_path, "v2.epochs_1.batch_size_256.parquet"),
+    Path(batch_model_path, "v2.epochs_1.batch_size_512.parquet"),
+]
+
+batch_df = [pd.read_parquet(f) for f in batch_model_files]
+
+batch_df[0].head()
+
+mean_times = []
+batch_sizes = []
+
+for df, file_path in zip(batch_df, batch_model_files):
+    name = file_path.name
+    parts = name.split(".")
+    batch_size = int(parts[2].split("_")[-1])
+    mean_execution_time = df["execution_time"].mean()
+
+    batch_sizes.append(batch_size)
+    mean_times.append(mean_execution_time)
+
+batch_time_df = pd.DataFrame({"Mean Execution Time [s]": mean_times}, index=batch_sizes)
+batch_time_df.index.name = "Batch Size"
+
+batch_time_df.plot(
+    kind="bar",
+    figsize=(8, 2.5),
+    # linewidth=0.5,
+    # marker=".",
+    # markersize=1.5,
+    ylabel="Execution Time [s]",
+    legend=False,
+    rot=0,
+)
+plt.ylim(0, 400)
+```
+
+```{python}
+#| label: tbl-batch-size-vs-exec
+#| tbl-cap: Mean Execution Time
+
+batch_time_df = batch_time_df.reset_index()
+batch_time_df = batch_time_df.round(2)
+batch_time_df
+```
+
+:::
+
+From the batch size exploration detailed in @fig-batch-size-exc-time and @tbl-batch-size-vs-exec, it was observed that a batch size of 256 provided an optimal balance between execution time and resource usage for this model architecture. This batch size will be set at `256` for all training runs, enabling the most efficient use of time.
+
+
+### Image Size
+
+During the early stages of testing, the effect of image size on model performance was uncovered
+through unexpected observations. Initial experiments omitted cropping during testing, leading to
+higher test accuracy. However, when a cropping strategy was later applied to validation data,
+validation accuracy decreased by approximately 15%. This discrepancy highlighted the importance of
+exploring the relationship between image size and model performance.
+
+In experimenting with various cropping strategies, we observed that altering
+cropping dimensions significantly influenced model accuracy. Specifically, cropping sizes of 32
+pixels, 48 pixels, and no cropping were identified as key hyperparameters for tuning. These
+variations had a substantial impact on the model's generalization capabilities, emphasizing the
+critical role of image preprocessing in the model pipeline.
+
+Image size does have an effect on the model execution time, which is detailed in
+@sec-model-exec-time.
+
+
+### Other Potential Hyperparameters
+
+Several other potential dynamic hyperparameters were considered during the exploration phase, including:
+
+- Stride: Adjusting the step size during convolution operations.
+- Padding: Modifying the boundary handling during convolutions.
+- Model Layers and Complexity: Exploring deeper or more complex architectures.
+- Randomizing Input Images: Introducing variability in training samples.
+- Normalizing Input Images: Standardizing pixel values for faster convergence.
+
+While these parameters are likely influence model performance, they were ultimately kept
+static. This decision was motivated by the need to balance computational feasibility with meaningful
+experimentation, given the constraints of this project.
+
+## Training Specification
+
+This section specificions for the trained models. A total of nine models were trained, each evaluated over 100 epochs with a batch size of 256. The Adam optimizer was employed with a learning rate of 0.001, and the loss function was defined as cross-entropy, reflecting the binary classification nature of the task. Notably, no image normalization techniques were applied during preprocessing, while padding and stride were set to 1 to maintain the spatial dimensions of the input.
+
+The models were designed using three distinct architecture types: VGNet, InceptionNet, and ResNet, to assess the impact of architectural variation on performance. Additionally, three cropping types (none, 48px center, and 32px center) were explored to understand how spatial input modifications influence learning. Tables @tbl-common-model-params and @tbl-changed-model-params summarize the hyperparameters that remained consistent across experiments and those that varied between models, respectively.
+
+
+| Description         | Value                              |
+| :-----              | -----:                             |
+| Models Trained      | 9                                  |
+| Number of Epochs    | 100                                |
+| Batch Size          | 256                                |
+| Optimizer           | Adam                               |
+| Learning Rate       | 0.001                              |
+| Loss Function       | Cross Entropy                      |
+| Image Normalization | None                               |
+| Padding             | 1                                  |
+| Stride              | 1                                  |
+
+: Common Model Hyperparameters {#tbl-common-model-params}
+
+| Description         | Value                              |
+| :-----              | -----:                             |
+| Model Types         | 3 (VGNet, InceptionNet, ResNet)    |
+| Cropping Types      | 3 (None, 48px Center, 32px Center) |
+
+: Changed Model Hyperparameters {#tbl-changed-model-params}
+
+## Training Flowchart
+
+Visualized in @fig-train-detailed, the training process begins with defining the CNN architecture and initializing key hyperparameters, such as model type and input image size. Training is conducted using labeled image patches, with the model learning to classify cancerous and non-cancerous regions. Testing evaluates the model's accuracy and robustness, enabling the identification of strengths and weaknesses. Results are iteratively refined by tuning hyperparameters, retraining models, and optimizing their architectures.  
+
+```{mermaid}
+%%| label: fig-train-detailed
+%%| fig-cap: "Detailed Project Flowchart"
+
+flowchart LR
+
+    subgraph TrainingData[Training Data]
+        OriginalData["Original Data"]
+    end
+
+    subgraph Train
+        TrainImg[Training Images]
+        TrainLabels[Training Labels]
+    end
+
+    subgraph Validate
+        ValidateImg[Validation Images]
+        ValidateLabels[Validation Labels]
+    end
+
+    subgraph Model
+        CNN[Convolutional\nNeural\nNetwork]
+        subgraph HyperParameters
+            ModelType[Model Type]
+            ImageSize[Image Dimensions]
+        end
+        OptimizedCNN["Final Model"]
+    end
+
+    subgraph Test
+        TestImg[Test Images]
+        TestLabels[Test Labels]
+    end
+
+    subgraph Tune
+        TuneHyper[Optimize Hyperparameters]
+    end
+
+    subgraph Kaggle
+        Submit[Submission]
+    end
+
+OriginalData -->|"80%"| Train
+OriginalData -->|"20%"| Validate
+
+TrainImg --> CNN
+TrainLabels --> CNN
+
+ModelType --> CNN
+ImageSize --> CNN
+
+ValidateImg --> CNN --> ValidateLabels --> TuneHyper --> CNN
+
+TuneHyper --> OptimizedCNN
+CNN --> OptimizedCNN
+TestImg --> OptimizedCNN --> TestLabels --> Submit
+
+
+```
+
+## Training Hardware
+
+This project utilizes an M2 MacBook Pro Max with 32GB of RAM, leveraging PyTorch’s Metal Performance
+Shaders backend for GPU acceleration. The Metal backend enables efficient training on Apple Silicon
+devices, harnessing the GPU to accelerate deep learning workloads. This setup was chosen as a
+stable alternative to the Kaggle platform and has adequate performance.
+
+## Training Procedure
+
+Models were trained sequentially in the order specified in @tbl-train-order. Model specifications
+are passed via command line arguments and each model run starts the script in a clean state. In
+total 9 model runs were performed with different combinations of model and crop hyperparameters. All
+other parameters specified in @tbl-common-model-params were held constant for all training runs.
+
+| Training Run # | Model Hyperparameter       | Crop Specification Hyperparameter |
+| -----          | -----        | ---                |
+| 1              | VGNet        | 32 x 32            |
+| 2              | InceptionNet | 32 x 32            |
+| 3              | ResNet       | 32 x 32            |
+| 4              | VGNet        | 48 x 48            |
+| 5              | InceptionNet | 48 x 48            |
+| 6              | ResNet       | 48 x 48            |
+| 7              | VGNet        | Full Resolution    |
+| 8              | InceptionNet | Full Resolution    |
+| 9              | ResNet       | Full Resolution    |
+
+: Training Order {#tbl-train-order}
+
+During each each epoch of each training run the following metrics were collected and saved.
+
+| Name           | Unit    |
+| -----          | -----   |
+| Epoch          | Count   |
+| Execution Time | Seconds |
+| Training Loss  | Average |
+| Model Specs    | String  |
+
+: List of Collected Model Metrics {#tbl-model-metrics}
+
+These metrics will be used to determine the performance of each model
+
+## Model Execution Times {#sec-model-exec-time}
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-exec-times-per-epoch
+#| fig-cap: "Model Execution Time [seconds] per Training Epoch"
+
+import seaborn as sns
+sns.set_theme()
+
+results_path = Path("../model_metrics_output/").resolve()
+metrics = [
+    "v3.model_type_VGNet.transform_32PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_InceptionNet.transform_32PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_ResNet.transform_32PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_VGNet.transform_48PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_InceptionNet.transform_48PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_ResNet.transform_48PX_CROP.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_VGNet.transform_NONE.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_InceptionNet.transform_NONE.padding_1.stride_1.epochs_spec_100.parquet",
+    "v3.model_type_ResNet.transform_NONE.padding_1.stride_1.epochs_spec_100.parquet",
+]
+
+
+metrics_df = [pd.read_parquet(Path(results_path, p)) for p in metrics]
+
+metrics_combined = pd.concat(metrics_df, axis="index")
+
+
+# Parse model type from the model column
+metrics_combined['model_type'] = metrics_combined['model'].str.extract(r'model_type_([A-Za-z0-9]+)')
+
+# Group by model_type and aggregate the required metrics
+metrics_grouped = metrics_combined.groupby('model').agg(
+    max_epoch=('epoch', 'max'),
+    mean_learning_rate=('learning_rate', 'mean'),
+    mean_execution_time=('execution_time', 'mean'),
+    max_execution_time=('execution_time', 'max'),
+    min_execution_time=('execution_time', 'min'),
+    total_execution_time=('execution_time', 'sum'),
+    mean_training_loss=('training_loss', 'mean'),
+    max_training_loss=('training_loss', 'max'),
+    min_training_loss=('training_loss', 'min')
+).reset_index()
+
+# Extract model_type and transform_type from the 'model' column
+metrics_grouped['model_type'] = metrics_grouped['model'].str.extract(r'model_type_([A-Za-z0-9]+)')
+metrics_grouped['transform_type'] = metrics_grouped['model'].str.extract(r'transform_([A-Za-z0-9_]+)')
+
+# metrics_grouped['transform_type' == "NONE"] = "Full Resolution"
+# metrics_grouped['transform_type' == "48PX_CROP"] = "Center Crop - 48PX"
+# metrics_grouped['transform_type' == "32PX_CROP"] = "Center Crop - 32PX"
+# metrics_grouped['training_time_seconds']
+
+metrics_grouped.loc[metrics_grouped['transform_type'] == "NONE", 'transform_type'] = "Full Resolution"
+metrics_grouped.loc[metrics_grouped['transform_type'] == "48PX_CROP", 'transform_type'] = "Center Crop - 48PX"
+metrics_grouped.loc[metrics_grouped['transform_type'] == "32PX_CROP", 'transform_type'] = "Center Crop - 32PX"
+
+
+metrics_grouped['total_execution_time_hours'] = metrics_grouped['total_execution_time'] / 60 / 60
+
+metrics_grouped = metrics_grouped.sort_values(['total_execution_time'], ascending=False)
+# metrics_grouped[["model_type", "transform_type", "total_execution_time_hours", "mean_execution_time", "max_execution_time",
+# "min_execution_time"]]
+
+# Calculate the error bars
+metrics_grouped['error_min'] = metrics_grouped['mean_execution_time'] - metrics_grouped['min_execution_time']
+metrics_grouped['error_max'] = metrics_grouped['max_execution_time'] - metrics_grouped['mean_execution_time']
+
+# Combine errors for yerr
+metrics_grouped['yerr'] = list(zip(metrics_grouped['error_min'], metrics_grouped['error_max']))
+
+# Create the barplot
+plt.figure(figsize=(7.5, 3.5))
+barplot = sns.barplot(
+    data=metrics_grouped,
+    x="model_type",
+    y="mean_execution_time",
+    hue="transform_type",
+    errorbar=None
+)
+
+# Add error bars
+for idx, bar in enumerate(barplot.patches[:-3]):
+    x = bar.get_x() + bar.get_width() / 2
+    y = bar.get_height()
+    error = metrics_grouped['yerr'][idx]
+    plt.errorbar(x, y, yerr=[[error[0]], [error[1]]], fmt='none', c='black', capsize=5)
+
+plt.ylabel("Execution Time Per Epoch [s]")
+plt.xlabel(None)
+plt.legend(title="Transform Type")
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-total-exec-times
+#| fig-cap: "Model Total Execution Time [Hours]"
+
+plt.figure(figsize=(7.5, 3.5))
+sns.barplot(metrics_grouped, x = "model_type", y="total_execution_time_hours", hue="transform_type")
+
+plt.ylabel("Total Execution Time Per Epoch [Hours]")
+plt.xlabel(None)
+plt.legend(title="Transform Type")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+print(metrics_grouped.info())
+metrics_grouped.head()
+```
+
+
+:::
+
+```{python}
+# metrics_grouped.info()
+metrics_grouped = metrics_grouped.sort_values(["total_execution_time_hours"], ascending=False)
+metrics_grouped = metrics_grouped.reset_index()
+metrics_grouped = metrics_grouped.rename({
+    "model_type": "Model Type",
+    "transform_type": "Transform Type",
+    "total_execution_time_hours": "Execution Time [Hours]"
+}, axis="columns")
+
+min_execution_time = metrics_grouped["Execution Time [Hours]"].min()
+metrics_grouped["Time Factor"] = metrics_grouped["Execution Time [Hours]"] / min_execution_time
+
+
+metrics_grouped[['Model Type', 'Transform Type', 'Execution Time [Hours]', "Time Factor"]]
+```
+
+## Confusion Matricies
+
+After each model run a confusion matrix generated by passing the validation data into the model and
+performing calculations on the predicted output. The following confusion matrix and classification report provide a comprehensive evaluation of the VGNet model’s performance when trained on 32×32 px images.
+
+```{python}
+#| label: tbl-confusion-matrix
+#| tbl-cap: "Sample Confusion Matrix"
+
+confusion_matrix = pd.read_parquet("./week_3_sample_confusion_matrix.parquet")
+confusion_matrix
+```
+
+In @tbl-confusion-matrix we observe:
+
+* True Positives (17420): The model correctly identified 17,420 true values.
+* True Negatives (25916): The model correctly predicted 25,916 false values.
+* False Positives (179): The model incorrectly predicted 179 instances as true when the labeled
+  value was false.
+* False Negatives (490): The model incorrectly predicted 490 instances as false when the labeled
+  value was true.
+
+Overall this model correctly predicted `{python} round((1 - ((490 + 179) /
+confusion_matrix.sum().sum())) * 100, 2)`% of the validation data, demonstrating strong performance
+with a low error rate relative to the dataset size. However, without further testing, it is
+there is a high level of uncertaintity as to whether the model generalizes well beyond the training and validation data.
+
+## Classification Report
+
+```{python}
+#| label: tbl-class-reprt
+#| tbl-cap: "Sample Classification Report"
+
+classification_report = pd.read_parquet("./week_3_sample_classification_report.parquet")
+
+classification_report = classification_report.rename(
+    {
+        "precision": "Precision",
+        "recall": "Recall",
+        "f1-score": "F1 Score",
+    },
+    axis="columns",
+)
+
+classification_report = classification_report.rename(
+    {
+        "Class 0": "True",
+        "Class 1": "False",
+        "weighted avg": "Average",
+    },
+    axis="index",
+)
+
+classification_report.loc[["True", "False", "Average"]][["Precision", "Recall", "F1 Score"]]
+```
+The classification report in @tbl-class-reprt highlights the VGNet model's performance across several key metrics. The model trained on 32×32 px images achieves high accuracy, precision, recall, and F1-scores for both classes. It shows a slight bias toward detecting Class 0 (false), because of the slightly higher recall for this class compared to Class 1. Despite this, the overall performance is excellent. The low numbers of false positives and false negatives suggest that the model is well-fitted to the training data. However, additional testing on unseen data is necessary to confirm the model's robustness and ensure it is not overfitting.
+
+
+## Training Loss Results
+
+Training loss is output during each batch using the Cross Entropy loss function and averaged over
+each epoch. The loss function provides a metric of improvement by the model and a decreasing loss
+function means that the model is learning the patterns of the training dataset.  The loss function
+is also used to monitor overfitting and the learning rate. An indicator of overfitting is a loss
+function that is lower validation scores. An indicator of a too high learning rate is oscillating, or
+increasing in the loss rate after an initial local minimum. In
+@fig-training-loss-comparison-all-in-separate-by-model and @fig-training-loss-comparison-all-in-one,
+the training loss is visualized over epoch.
+
+### Training Loss by Model
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-training-loss-comparison-all-in-separate-by-model
+#| fig-cap: "Training Loss Comparison - By Model"
+#| fig-subcap: 
+#|   - "VGNet Training Loss Comparison"
+#|   - "InceptionNet Training Loss Comparison"
+#|   - "ResNet Training Loss Comparison"
+#| layout-ncol: 1
+
+
+for model in ["VGNet", "InceptionNet", "ResNet"]:
+    fig, axs = plt.subplots(1, 1, figsize=(8, 2))
+    for df in metrics_df:
+        df = df.set_index(['epoch'])
+        raw_model = df['model'].unique()[0]
+        parts = raw_model.split(".")
+        this_model = parts[1].split("_")[-1]
+        if this_model == model:
+            if "32" in parts[2]:
+                this_model += " 32 px Crop"
+            if "48" in parts[2]:
+                this_model += " 48 px Crop"
+            if "NONE" in parts[2]:
+                this_model += " Original"
+
+            df['training_loss'].plot(ax=axs, label=this_model)
+
+
+    plt.ylabel("Training Loss")
+    plt.xlabel("Epochs")
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.show()
+```
+
+:::
+
+### Combined Training Loss
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-training-loss-comparison-all-in-one
+#| fig-cap: "All Models - Training Loss Comparison"
+
+fig, axs = plt.subplots(1, 1, figsize=(8, 3.5))
+
+for df in metrics_df:
+    df = df.set_index(['epoch'])
+    raw_model = df['model'].unique()[0]
+    parts = raw_model.split(".")
+    model = parts[1].split("_")[-1]
+    if "32" in parts[2]:
+        model += " 32 px Crop"
+    if "48" in parts[2]:
+        model += " 48 px Crop"
+    if "NONE" in parts[2]:
+        model += " Original"
+
+    df['training_loss'].plot(ax=axs, label=model)
+
+plt.title("Training Loss Comparison")
+plt.ylabel("Training Loss")
+plt.xlabel("Epochs")
+plt.legend()
+plt.show()
+```
+
+:::
+
+
+The training loss results in @fig-training-loss-comparison-all-in-separate-by-model and @fig-training-loss-comparison-all-in-one show that all models successfully learned patterns from the test images. Both the VGNet and ResNet models exhibit a significant reduction in training loss, approaching near-zero levels after approximately 30 epochs. Notably, models trained on full-size images achieve lower training losses more quickly compared to those trained on cropped images. The InceptionNet model demonstrates comparatively limited learning capacity, stabilizing at a higher training loss of approximately 0.15 across all configurations.
+
+The VGNet and ResNet models have no clear signs of overfitting, maintaining stability throughout the training process. In contrast, the InceptionNet model shows some indications of overfitting, particularly as the training loss stabilizes without further improvement. Based on these observations, the VGNet and ResNet models are likely to deliver higher accuracy in their final configurations compared to the InceptionNet model.
+
+# Results
+
+## Submission Procedure
+
+The trained models were evaluated locally using the test image dataset, and the predictions were saved to a .csv file. This file was subsequently uploaded to Kaggle as a dataset, enabling the results to be shared and analyzed within the competition framework. The uploaded dataset was then read into a dataframe and used to generate the final submission.csv file, ensuring compatibility with Kaggle's submission requirements.
+
+## Kaggle Scores
+
+After submitting, this Kaggle competition produces a public and a private score based on the scoring
+metric. The following sections detail the results for all models.
+
+```{python}
+kaggle_results = [
+    {
+        "model": "VGNet",
+        "pixels": 32,
+        "kaggle_version": 12,
+        "kaggle_private_score": 0.7462,
+        "kaggle_public_score": 0.7670,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "VGNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 32PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "InceptionNet",
+        "pixels": 32,
+        "kaggle_version": 13,
+        "kaggle_private_score": 0.7037,
+        "kaggle_public_score": 0.7299,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "InceptionNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 32PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "ResNet",
+        "pixels": 32,
+        "kaggle_version": 14,
+        "kaggle_private_score": 0.7464,
+        "kaggle_public_score": 0.7796,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "ResNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 32PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "VGNet",
+        "pixels": 48,
+        "kaggle_version": 15,
+        "kaggle_private_score": 0.7734,
+        "kaggle_public_score": 0.8124,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "VGNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 48PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "InceptionNet",
+        "pixels": 48,
+        "kaggle_version": 16,
+        "kaggle_private_score": 0.7205,
+        "kaggle_public_score": 0.7432,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "InceptionNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 48PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "ResNet",
+        "pixels": 48,
+        "kaggle_version": 17,
+        "kaggle_private_score": 0.7523,
+        "kaggle_public_score": 0.7551,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "ResNet")
+            & (metrics_grouped["Transform Type"] == "Center Crop - 48PX")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "VGNet",
+        "pixels": 96,
+        "kaggle_version": 18,
+        "kaggle_private_score": 0.7983,
+        "kaggle_public_score": 0.8497,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "VGNet")
+            & (metrics_grouped["Transform Type"] == "Full Resolution")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "InceptionNet",
+        "pixels": 96,
+        "kaggle_version": 19,
+        "kaggle_private_score": 0.7688,
+        "kaggle_public_score": 0.8163,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "InceptionNet")
+            & (metrics_grouped["Transform Type"] == "Full Resolution")
+        ]["Execution Time [Hours]"].values[0],
+    },
+    {
+        "model": "ResNet",
+        "pixels": 96,
+        "kaggle_version": 20,
+        "kaggle_private_score": 0.8198,
+        "kaggle_public_score": 0.8682,
+        "training_time": metrics_grouped[
+            (metrics_grouped["Model Type"] == "ResNet")
+            & (metrics_grouped["Transform Type"] == "Full Resolution")
+        ]["Execution Time [Hours]"].values[0],
+    },
+]
+
+
+kaggle_df = pd.DataFrame(kaggle_results)
+
+# kaggle_df['Accuracy Per Training Hour'] = kaggle_df['training_time'] / kaggle_df["kaggle_public_score"]
+kaggle_df['Accuracy Per Training Hour'] = kaggle_df['kaggle_public_score'] / kaggle_df["training_time"]
+
+# kaggle_df['kaggle_private_score'] *= 100.0
+# kaggle_df['kaggle_public_score'] *= 100.0
+
+kaggle_df = kaggle_df.rename(
+    {
+        "kaggle_private_score": "Kaggle Private Score",
+        "kaggle_public_score": "Kaggle Public Score",
+        "kaggle_version": "Kaggle Version",
+        "pixels": "Image Dims [Px]",
+        "model": "Model Family",
+        "training_time": "Training Time [Hours]",
+    },
+    axis="columns",
+)
+```
+
+## Results Table and Proof
+
+:::{.column-screen-inset}
+
+:::{.grid}
+
+:::{.g-col-6}
+
+![Kaggle Test Results Screenshot](./week_3_kaggle_results.png){#fig-kaggle-res}
+
+
+:::
+
+:::{.g-col-6}
+
+```{python}
+#| label: tbl-train-results
+#| tbl-cap: Kaggle Test Results
+
+kaggle_df = kaggle_df.sort_index(ascending=False)
+kaggle_df = kaggle_df.reset_index()
+kaggle_df[['Kaggle Version', 'Kaggle Public Score', 'Model Family', "Image Dims [Px]"]]
+```
+
+:::
+
+:::
+
+:::
+
+## Kaggle Public Scores
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-submit-public-score
+#| fig-cap: "All Kaggle Submission Public Stores"
+
+plt.figure(figsize=(8, 3.5))
+
+# Create the barplot
+ax = sns.barplot(
+    data=kaggle_df,
+    x="Model Family",
+    y="Kaggle Public Score",
+    hue="Image Dims [Px]",
+    palette=sns.color_palette()[:3]
+);
+
+# Add labels to each bar
+for container in ax.containers:
+    ax.bar_label(container, fmt="%.3f")  # Format to 1 decimal place
+
+# Move the legend below the x-axis
+plt.legend(
+    title="Image Dims [Px]",
+    loc="upper center", 
+    bbox_to_anchor=(0.5, -0.2),  # Position legend below the x-axis
+    ncol=3  # Arrange legend items in 3 columns
+)
+
+plt.xlabel(None)
+plt.ylim((0, 1))
+
+# Adjust layout for better spacing
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+```{python}
+#| label: tbl-public-results
+#| tbl-cap: Kaggle Public Test Results
+
+public_df = kaggle_df[['Model Family', "Image Dims [Px]", 'Kaggle Public Score', ]]
+public_df = public_df.sort_values(['Kaggle Public Score'], ascending=False)
+public_df = public_df.reset_index(drop=True)
+public_df
+```
+
+@fig-submit-public-score, and @tbl-public-results summarize the Kaggle public scores results for three model families ResNet, VGNet, and InceptionNet, trained on images of varying dimensions (32px, 48px, and 96px). Key observations include:
+
+- ResNet achieved the highest Kaggle public score (0.8682) when trained on 96px images, demonstrating the strongest performance on larger image sizes.
+- VGNet closely followed with a score of 0.8497 on 96px images and maintained competitive performance across all dimensions, ranking second overall with 48px images (0.8124) and third with 32px images (0.7670).
+- InceptionNet scored lower than both ResNet and VGNet across all image sizes, peaking at 0.8163 with 96px images and declining to 0.7299 with 32px images.
+
+Overall, larger image dimensions (96px) resulted in better public scores for all models, with ResNet and VGNet consistently outperforming InceptionNet across the board.
+
+:::
+
+## Accuracy vs. Computational Efficiency
+
+
+:::{.column-screen-inset-right}
+
+```{python}
+#| label: fig-submit-efficiency
+#| fig-cap: "All Kaggle Submission Private Stores"
+
+plt.figure(figsize=(8, 3.5))
+
+# Create the barplot
+ax = sns.barplot(
+    data=kaggle_df,
+    x="Model Family",
+    y="Accuracy Per Training Hour",
+    hue="Image Dims [Px]",
+    palette=sns.color_palette()[:3]
+);
+
+# Add labels to each bar
+for container in ax.containers:
+    ax.bar_label(container, fmt="%.3f")  # Format to 1 decimal place
+
+# Move the legend below the x-axis
+plt.legend(
+    title="Image Dims [Px]",
+    loc="upper center", 
+    bbox_to_anchor=(0.5, -0.2),  # Position legend below the x-axis
+    ncol=3  # Arrange legend items in 3 columns
+)
+
+plt.xlabel(None)
+
+# Adjust layout for better spacing
+plt.ylim((0, 0.45))
+plt.tight_layout()
+plt.show()
+```
+
+:::
+
+```{python}
+#| label: tbl-efficency-results
+#| tbl-cap: Kaggle Accuracy vs. Computational Efficiency
+
+efficency_df = kaggle_df[['Model Family', "Image Dims [Px]", 'Accuracy Per Training Hour']]
+efficency_df.loc[:, 'Accuracy Per Training Hour'] = efficency_df['Accuracy Per Training Hour'].round(3)
+efficency_df = efficency_df.sort_values(['Accuracy Per Training Hour'], ascending=False)
+efficency_df = efficency_df.reset_index(drop=True)
+efficency_df
+```
+In @fig-submit-efficiency and @tbl-efficency-results we detail the Accuracy Per Training Hour metric
+which evaluates model efficiency by dividing the Kaggle public score by the training time. Key
+findings include:
+
+- VGNet with 32px images achieves the highest efficiency (0.355), balancing accuracy with
+low training time.
+- InceptionNet also shows good efficiency at 32px (0.260), but its efficiency
+decreases with larger image sizes (48px: 0.243, 96px: 0.234).
+- ResNet models are less efficient,
+with a significant drop in performance per training hour as image size increases (32px: 0.166, 48px:
+0.102, 96px: 0.041).
+
+While accuracy is the primary metric, VGNet with 32px images offers the best trade-off between
+accuracy and training efficiency, making it the most suitable model when training time is a critical
+factor. In contrast, ResNet shows diminishing returns in efficiency with larger images, indicating
+higher computational cost relative to its accuracy gains.
+
+
+# Conclusion
+
+This project aimed to develop and evaluate a set of deep learning models for image classification, leveraging various architectures including VGNet, InceptionNet, and ResNet. The models were trained on image data of varying resolutions (32px, 48px, 96px) to assess their performance across different configurations. We conducted extensive training on these models, carefully recording training times, accuracy scores, and computational efficiency to identify the optimal balance between accuracy and training cost.
+
+Through systematic evaluation and comparison, we achieved a comprehensive understanding of how different models and image sizes affect both accuracy and training efficiency. The models were tested using the Kaggle platform, and their performance was evaluated through metrics such as public scores, training time, and efficiency per training hour. This process provided valuable insights into which model and image configurations offer the best trade-offs for the given task.
+
+## Achievements
+
+The models trained on 96px images consistently outperformed those trained on smaller images in terms of Kaggle public scores, with ResNet 96px achieving the highest score of 0.8682. However, when accounting for the computational cost using the Accuracy Per Training Hour metric, VGNet 32px emerged as the most efficient model, with the highest score of 0.355. This highlights the importance of considering not just accuracy but also the cost of training time when deploying machine learning models in real-world scenarios.
+
+The breadth of training included the evaluation of three different architectures (VGNet, InceptionNet, ResNet) across multiple image sizes, revealing critical patterns in model behavior, performance, and computational efficiency. The depth of training involved extensive epochs and rigorous testing, providing a reliable assessment of each model's ability to generalize to unseen data.
+
+## Future Work
+
+Several areas of future work have the poential to further enhance these cancer image detection accuracy and efficiency:
+
+1. Continued Hyperparameter Tuning:
+   - Stride and Padding: Experimenting with different stride values and padding techniques could help refine the model’s learning ability, especially for smaller image sizes, by adjusting how features are extracted during the convolutional layers.
+   - Leveraging hyperparamater optimization libraries including [Optuna](https://optuna.readthedocs.io/en/stable/)
+  
+   
+2. Training Rate Scheduling:
+   - Implementing dynamic learning rate scheduling methods (such as learning rate decay, cyclical learning rates, or one-cycle learning) could optimize convergence during training, potentially leading to better generalization and faster convergence.
+
+3. Early Stopping:
+   - Introducing early stopping based on validation loss could prevent overfitting, saving training time while ensuring the model generalizes well to new data.
+
+4. Image Normalization:
+   - Normalizing the input images using the measured dataset values (mean, standard deviation) could improve model stability and help accelerate convergence by reducing internal covariate shift.
+
+5. Data Augmentation:
+   - Experimenting with data augmentation techniques, such as jittering, rotations, or flipping, could increase model robustness by allowing it to learn from a wider variety of data representations and patterns.
+
+6. Model Ensembling:
+   - Further research could explore combining the predictions from multiple models using ensembling techniques (e.g., bagging or boosting) to improve predictive accuracy and reduce model bias.
+
+By addressing these areas, future iterations of this project has the potential produce models that are both more accurate and efficient, with broader applicability across various image classification tasks.
+
+
+# References
