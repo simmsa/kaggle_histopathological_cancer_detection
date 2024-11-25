@@ -17,6 +17,7 @@ format:
         code-fold: true
     ipynb:
         toc: true
+        embed-resources: true
 
 reference-lotation: margin
 citation-lotation: margin
@@ -25,7 +26,7 @@ toc-location: left
 code-line-numbers: false
 toc-title: 'Table of Contents'
 number-sections: true
-bibliography: ../ref.bib
+bibliography: ref.bib
 embed-resources: true
 # keep-ipynb: true
 ---
@@ -166,17 +167,14 @@ indicates if the images is classified as having cancer, `1` or not having cancer
 
 | Statistic     | Value              |
 | -----         | -----              |
-| Value Count   | `{python} len(df)` |
-| `NaN` Count   | `{python} df.isna().sum().sum()` |
-| Unique Values | `{python} str(df["label"].unique()).replace('[', '').replace(']', '').replace(" ", ', ')` |
 | Percentage of `1` | `{python} f"{(len(df[df['label'] == 1]) / len(df)) * 100:.4f}"`% |
 | Percentage of `0` | `{python} f"{(len(df[df['label'] == 0]) / len(df)) * 100:.4f}"`% |
 
-: Training Label Data Statistics {#tbl-train-label-stats}
+: Training Label Data Distribution {#tbl-train-label-dist}
 
-In @tbl-train-label-stats there we calculate that roughly 40 percent of the training data has a
+In @tbl-train-label-dist we calculate that roughly 40 percent of the training data has a
 training label of 1. While not entirely unexpected, this is interesting and may be useful as a
-secondary validation check during the training process
+secondary validation check during the training process.
 
 
 ## Training Images
@@ -1441,8 +1439,6 @@ public_df
 - InceptionNet scored lower than both ResNet and VGNet across all image sizes, peaking at 0.8163 with 96px images and declining to 0.7299 with 32px images.
 
 Overall, larger image dimensions (96px) resulted in better public scores for all models, with ResNet and VGNet consistently outperforming InceptionNet across the board.
-
-:::
 
 ## Accuracy vs. Computational Efficiency
 
