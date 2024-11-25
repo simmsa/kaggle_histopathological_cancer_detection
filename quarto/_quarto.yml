@@ -1,0 +1,12 @@
+project:
+  type: website
+  output-dir: "../docs"
+
+website:
+  title: "Histopathological Cancer Detection"
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
